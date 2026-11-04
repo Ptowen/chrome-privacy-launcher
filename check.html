@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chrome 独立环境 · 本地检测</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f4;color:#1d3029;font:16px/1.65 system-ui,sans-serif}main{max-width:880px;margin:48px auto;padding:28px}h1{font-size:32px;letter-spacing:-1px;margin:0}p{color:#57695f}.tag{display:inline-block;color:#22674d;background:#e0ede6;padding:4px 12px;border-radius:20px;font-size:13px}section{background:white;border:1px solid #dce4df;border-radius:18px;padding:8px 24px;margin:24px 0}.row{display:grid;grid-template-columns:180px 1fr;gap:16px;padding:18px 0;border-bottom:1px solid #edf0ee}.row:last-child{border:0}.value{overflow-wrap:anywhere;font-family:ui-monospace,monospace}.hint{font-size:13px;color:#718077}.actions{display:flex;gap:12px;flex-wrap:wrap}button{background:#245a43;color:white;border:0;border-radius:9px;padding:12px 18px;font:inherit;cursor:pointer}#result{white-space:pre-wrap}a{color:#245a43}@media(max-width:600px){main{margin:12px auto;padding:18px}.row{grid-template-columns:1fr;gap:4px}}
+</style>
+<main>
+<span class="tag">本地运行 · 无外部资源 · 无数据上传</span>
+<h1>看看网页实际能读到什么</h1>
+<p>这里显示当前浏览器提供的值。它不是国籍检测，也不代表任何平台的风控结果。</p>
+<section id="signals"></section>
+<div class="actions"><button id="refresh">重新检测</button><button id="export">导出检测结果</button></div>
+<p id="result" role="status"></p>
+<p class="hint">字体只是有限样本的测量推断；没有测到不代表字体完全不可见。Emoji 是实际显示样本，不能据此判定国籍。本页不检测 IP、HTTP 请求头、账号历史或其他程序环境。</p>
+<p class="hint">保持启动器窗口运行。字体和 Emoji 未修改。Worker、浏览器内部页面和未验证的执行环境不承诺覆盖。网页时间采用 UTC，遇到兼容问题可回到日常浏览器。</p>
+</main>
+<script>
+let report;
+const fonts=['Microsoft YaHei','Microsoft YaHei UI','SimSun','NSimSun','PingFang SC'];
+function fontSamples(){
+  const canvas=document.createElement('canvas');const ctx=canvas.getContext('2d');
+  if(!ctx)return '无法测量';
+  const sample='中文测试字体 mWi0123456789';
+  const matches=fonts.filter(font=>['monospace','serif','sans-serif'].some(base=>{
+    ctx.font=`48px ${base}`;const width=ctx.measureText(sample).width;
+    ctx.font=`48px "${font}", ${base}`;
+    return Math.abs(ctx.measureText(sample).width-width)>0.01;
+  }));
+  return matches.length?matches.join(', '):'未在有限样本中测到差异（不能证明完全隐藏）';
+}
+function run(){
+  const format=new Intl.DateTimeFormat();
+  report={timeZone:format.resolvedOptions().timeZone,languages:Array.from(navigator.languages),locale:format.resolvedOptions().locale,offsetMinutes:new Date().getTimezoneOffset(),fontSamples:fontSamples(),userAgent:navigator.userAgent};
+  const rows=[['网页时区',report.timeZone,'此工具预期报告 UTC'],['浏览器语言',report.languages.join(', '),'预期以 en-US / en 开头'],['Intl 区域设置',report.locale,'预期 en-US；用于日期和数字格式'],['当前时区偏移',String(report.offsetMinutes)+' 分钟','UTC 的偏移为 0；这里只测当前日期'],['字体样本推断',report.fontSamples,'本工具未隐藏字体，保留中文显示能力'],['Emoji 显示样本','😀 🌍 🎉 🧑‍💻','保留实际渲染，不自动评分'],['User-Agent',report.userAgent,'保留浏览器提供的值']];
+  const container=document.getElementById('signals');container.replaceChildren();
+  rows.forEach(([label,value,hint])=>{const row=document.createElement('div');row.className='row';const left=document.createElement('strong');left.textContent=label;const right=document.createElement('div');const val=document.createElement('div');val.className='value';val.textContent=value;const sub=document.createElement('div');sub.className='hint';sub.textContent=hint;right.append(val,sub);row.append(left,right);container.append(row)});
+  const english=/^en(?:-|$)/i.test(report.languages[0]||'');
+  document.getElementById('result').textContent=report.timeZone==='UTC'&&report.offsetMinutes===0&&english&&report.locale==='en-US'?'已观察到：UTC 时区、偏移 0、英语和 en-US 区域格式。字体与 Emoji 未修改。':'当前值与预期存在差异。请确认通过本工具启动了独立 Chrome，并保持启动器运行。';
+}
+document.getElementById('refresh').onclick=run;
+document.getElementById('export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='browser-environment.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+run();
+</script>
+</html>

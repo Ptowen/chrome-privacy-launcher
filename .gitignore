@@ -1,0 +1,6 @@
+profile/
+chrome-profile/
+.test-artifacts/
+desktop/build/
+dist/
+browser-environment.json
