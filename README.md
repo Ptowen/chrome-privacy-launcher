@@ -2,6 +2,15 @@
 
 ## EXE 版（推荐）
 
+v1.1.0 增加两种浏览模式，启动前选择，运行中不能切换：
+
+| 模式 | 行为 |
+| --- | --- |
+| 保留登录（默认） | 沿用已有独立 profile，关闭后保留 Cookie、网站登录和历史 |
+| 临时浏览 | 每次建立新的独立 profile，不导入保留模式的数据，正常退出后清理 |
+
+临时目录位于工具数据目录的 `temporary-profiles/session-*/profile`。清理失败会显示“临时数据未清理”，可点击“重试清理临时数据”；重新启动工具也会发现遗留目录。强制结束进程、系统崩溃或断电可能留下数据，不能保证立即清理，也不提供磁盘安全擦除。临时浏览不会撤销网站服务器上的会话。
+
 从 [Releases](https://github.com/Ptowen/chrome-privacy-launcher/releases/latest) 下载 `ChromePrivacy.exe`，双击后点击「启动独立 Chrome」。单个文件即可运行，内置 Node.js，不需要手动安装运行环境；电脑需要已经安装 Chrome。适用于 Windows 10/11 x64，使用系统自带的 .NET Framework 4.x，无需管理员权限。
 
 运行期间保持启动器窗口打开。点击「停止并关闭此环境」或关闭启动器会关闭它启动的 Chrome；已有的日常 Chrome 不受影响。首次启动会将内置资源释放到 `%LOCALAPPDATA%\ChromePrivacyLauncher\runtime`，该工具自己的登录和历史保存在 `%LOCALAPPDATA%\ChromePrivacyLauncher\chrome-profile`。不会迁移原脚本版本的数据。
@@ -13,6 +22,8 @@ EXE 版与脚本版功能相同：语言和默认区域格式为英语，网页�
 ## 脚本版
 
 双击 `Start.cmd`。自动寻找 Chrome 和 Node.js，启动独立 Chrome 并打开本地检测页。请保留控制台窗口；退出按 Ctrl+C，会一并关闭此工具启动的 Chrome。也可以直接关闭这些 Chrome 窗口。
+
+`Start.cmd` 默认保留登录；`Temporary.cmd` 启动临时模式。也可执行 `Launcher.ps1 -Mode temporary`。脚本版的临时目录位于项目下的 `temporary-profiles`；清理失败后可用 `node chrome-launcher.mjs --cleanup-temp "完整 session 目录" --temporary-root "完整 temporary-profiles 目录"` 重试。清理命令会校验目录范围、工具标记及进程状态，拒绝清理活动环境或保留模式目录。
 
 脚本版需要 Chrome 和 Node.js 22.4+（建议当前 LTS）；不需要 npm 包。找不到 Chrome 时可手动选 `chrome.exe`；也可设置 `CHROME_BINARY` 环境变量。Node.js 下载：https://nodejs.org/ 。不自动下载安装，cmd 的 ExecutionPolicy Bypass 只对当次 PowerShell 有效。
 
@@ -33,7 +44,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\desktop\build.ps1
 - 对新标签页和单独的 iframe 调试目标自动应用设置后恢复脚本执行；失败会尝试关闭对应页面并在控制台报告。导航和刷新沿用该页面的设置。
 - 不修改 User-Agent、字体或 Emoji。不改变 Windows 时区、输入法、语言、代理、默认浏览器设置或字体；不改变网络 IP。
 - 不承诺 Worker / Service Worker / Shared Worker、内部 Chrome 页面及所有网站执行环境的覆盖。此版本不是浏览器内核级抗指纹方案，不保证地区判断或平台风控结果。
-- 此环境的网页时钟采用 UTC，可能影响网站的时间显示。登录、Cookie、历史持久保存在 chrome-profile；不是无痕模式。不要在此环境启用 Chrome 同步，以免自行引入日常设置。
+- 此环境的网页时钟采用 UTC，可能影响网站的时间显示。保留模式的登录、Cookie、历史持久保存在 chrome-profile；临时模式使用单次目录。不要在此环境启用 Chrome 同步，以免自行引入日常设置。
 
 ## 运行与退出
 

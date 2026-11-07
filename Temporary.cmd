@@ -1,0 +1,4 @@
+@echo off
+setlocal
+powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0Launcher.ps1" -Mode temporary
+if errorlevel 1 pause

@@ -1,10 +1,72 @@
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, open, unlink } from 'node:fs/promises';
-import { resolve, dirname, join } from 'node:path';
+import { readFile, writeFile, mkdir, mkdtemp, lstat, realpath, rm, rmdir, open, unlink } from 'node:fs/promises';
+import { resolve, dirname, basename, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const root = dirname(fileURLToPath(import.meta.url));
+const temporaryMarker = '.temporary-session.json';
+
+export async function cleanupTemporaryProfile(container, temporaryRoot) {
+  container = resolve(container);
+  temporaryRoot = resolve(temporaryRoot);
+  try {
+    if (dirname(container) !== temporaryRoot || !/^session-[A-Za-z0-9]+$/.test(basename(container))) throw new Error('临时目录范围校验失败');
+    if ((await lstat(container)).isSymbolicLink() || (await realpath(container)) !== join(await realpath(temporaryRoot), basename(container))) throw new Error('拒绝清理重定向的目录');
+    const marker = JSON.parse(await readFile(join(container, temporaryMarker), 'utf8'));
+    if (marker.kind !== 'chrome-privacy-temporary-v1' || marker.name !== basename(container)) throw new Error('不是本工具的临时目录');
+    const profile = join(container, 'profile');
+    const profileStat = await lstat(profile).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (profileStat?.isSymbolicLink()) throw new Error('拒绝清理重定向的 profile');
+    const pid = Number(await readFile(join(profile, '.launcher-lock'), 'utf8').catch(() => ''));
+    if (pid > 0) {
+      try { process.kill(pid, 0); throw new Error('临时环境仍在运行'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+    const port = Number((await readFile(join(profile, 'DevToolsActivePort'), 'utf8').catch(() => '')).split('\n')[0]);
+    if (port > 0 && port < 65536 && await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) }).then(r => r.ok).catch(() => false)) throw new Error('临时浏览器尚未完全退出，请稍后重试');
+    // Keep the marker outside the profile so failed/partial cleanup can be retried.
+    await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+    await unlink(join(container, temporaryMarker));
+    try { await rmdir(container); }
+    catch (error) {
+      await writeFile(join(container, temporaryMarker), JSON.stringify(marker), { flag: 'wx' });
+      throw error;
+    }
+    return { cleaned: true, path: container };
+  } catch (error) { return { cleaned: false, path: container, error: error.message }; }
+}
+
+export async function startBrowsing({ mode = 'persistent', profile = join(root, 'chrome-profile'), temporaryRoot = join(root, 'temporary-profiles'), onStatus = console.log, ...options }) {
+  if (!['persistent', 'temporary'].includes(mode)) throw new Error('未知浏览模式');
+  let container;
+  if (mode === 'temporary') {
+    temporaryRoot = resolve(temporaryRoot);
+    await mkdir(temporaryRoot, { recursive: true });
+    container = await mkdtemp(join(temporaryRoot, 'session-'));
+    await writeFile(join(container, temporaryMarker), JSON.stringify({ kind: 'chrome-privacy-temporary-v1', name: basename(container) }));
+    profile = join(container, 'profile');
+    onStatus('TEMP_PROFILE=' + container);
+  }
+  try {
+    const session = await startSession({ ...options, profile, onStatus });
+    // Cleanup runs after the browser connection and controller lease are closed.
+    const finished = session.closed.then(async () => {
+      await session.stop();
+      if (!container) return { cleaned: false, retained: true, path: profile };
+      const result = await cleanupTemporaryProfile(container, temporaryRoot);
+      onStatus(result.cleaned ? '临时数据已清理。' : `临时数据未清理：${result.path}；${result.error}。请重试清理。`);
+      return result;
+    });
+    return { ...session, profile, container, finished };
+  } catch (error) {
+    if (container) {
+      const result = await cleanupTemporaryProfile(container, temporaryRoot);
+      if (!result.cleaned) onStatus(`临时数据未清理：${result.path}；${result.error}`);
+    }
+    throw error;
+  }
+}
 const autoAttach = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
 
 class Protocol {
@@ -82,8 +144,10 @@ export async function startSession({ chrome, profile = join(root, 'chrome-profil
     await lease.close();
     await unlink(leasePath).catch(() => {});
   };
-  const stop = async () => {
-    if (stopping) return;
+  let stopPromise;
+  const stop = () => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
     stopping = true;
     if (protocol) await protocol.send('Browser.close').catch(() => {});
     if (child && child.exitCode === null && child.signalCode === null) {
@@ -92,6 +156,8 @@ export async function startSession({ chrome, profile = join(root, 'chrome-profil
     }
     protocol?.socket.close();
     await release();
+    })();
+    return stopPromise;
   };
   try {
     // Never attach to a browser left running by a previous controller.
@@ -181,13 +247,23 @@ export async function startSession({ chrome, profile = join(root, 'chrome-profil
 }
 
 async function main() {
+  const argument = name => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : undefined; };
+  if (argument('--cleanup-temp')) {
+    if (!argument('--temporary-root')) throw new Error('缺少临时根目录');
+    const result = await cleanupTemporaryProfile(argument('--cleanup-temp'), argument('--temporary-root'));
+    console.log(result.cleaned ? '临时数据已清理。' : `临时数据未清理：${result.error}；${result.path}`);
+    if (!result.cleaned) process.exitCode = 1;
+    return;
+  }
   const index = process.argv.indexOf('--chrome');
   const chrome = index >= 0 ? process.argv[index + 1] : process.env.CHROME_BINARY;
   if (!chrome) throw new Error('未找到 Chrome，请通过 Start.cmd 启动');
   console.log('Chrome 独立隐私环境\n只调整此环境的语言、网页时区和区域格式。字体 / Emoji / IP 保持实际值。');
   console.log('请保留此窗口。退出请按 Ctrl+C；将一并关闭此工具启动的 Chrome。');
   const profileIndex = process.argv.indexOf('--profile');
-  const session = await startSession({ chrome, ...(profileIndex >= 0 ? { profile: process.argv[profileIndex + 1] } : {}) });
+  const mode = argument('--mode') || 'persistent';
+  console.log(mode === 'temporary' ? '临时浏览：本次新建环境，退出后清理。' : '保留登录：关闭后保留 Cookie、历史和网站登录状态。');
+  const session = await startBrowsing({ chrome, mode, headless: process.argv.includes('--headless'), ...(argument('--temporary-root') ? { temporaryRoot: argument('--temporary-root') } : {}), ...(profileIndex >= 0 ? { profile: process.argv[profileIndex + 1] } : {}) });
   const shutdown = () => { void session.stop(); };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
@@ -198,7 +274,7 @@ async function main() {
     process.stdin.resume();
   }
   console.log('已启动。请在检测页核对 UTC、英语和区域格式。');
-  await session.closed;
+  await session.finished;
   await session.stop();
   if (process.argv.includes('--desktop')) process.stdin.destroy();
 }

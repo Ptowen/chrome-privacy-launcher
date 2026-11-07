@@ -1,5 +1,6 @@
 profile/
 chrome-profile/
+temporary-profiles/
 .test-artifacts/
 desktop/build/
 dist/

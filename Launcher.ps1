@@ -1,4 +1,4 @@
-﻿param([switch]$CheckOnly)
+﻿param([switch]$CheckOnly, [ValidateSet('persistent','temporary')][string]$Mode = 'persistent')
 $ErrorActionPreference = 'Stop'
 function Find-Executable($Name, $Candidates) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -32,5 +32,5 @@ if (-not $chrome) {
     if (-not $chrome) { exit 1 }
 }
 if (-not $node) { Write-Host '需要 Node.js 22.4 或更高版本：https://nodejs.org/'; exit 1 }
-& $node (Join-Path $PSScriptRoot 'chrome-launcher.mjs') --chrome $chrome
+& $node (Join-Path $PSScriptRoot 'chrome-launcher.mjs') --chrome $chrome --mode $Mode
 exit $LASTEXITCODE

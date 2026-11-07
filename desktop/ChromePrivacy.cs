@@ -13,7 +13,7 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Chrome 独立环境启动器")]
 [assembly: AssemblyDescription("独立 Chrome 环境：英语、UTC 时区、本地检测")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
 
 static class Program
 {
@@ -158,14 +158,25 @@ sealed class LauncherForm : Form
 {
     TextBox chromePath = new TextBox(), log = new TextBox();
     Button start = new Button(), stop = new Button(), browse = new Button();
+    RadioButton persistent = new RadioButton(), temporary = new RadioButton();
+    Button retry = new Button();
+    string lastTemporary;
     Process controller;
     ChildJob job;
     bool stopping, closing, busy;
+    string FindPendingTemporary()
+    {
+        string temporaryRoot = Path.Combine(Program.DataRoot, "temporary-profiles");
+        if (!Directory.Exists(temporaryRoot)) return null;
+        foreach (string path in Directory.GetDirectories(temporaryRoot, "session-*", SearchOption.TopDirectoryOnly))
+            if (File.Exists(Path.Combine(path, ".temporary-session.json"))) return path;
+        return null;
+    }
     public LauncherForm()
     {
         Text = "Chrome 独立环境启动器";
         Font = new Font("Microsoft YaHei UI", 10);
-        ClientSize = new Size(680, 520);
+        ClientSize = new Size(680, 600);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -181,22 +192,52 @@ sealed class LauncherForm : Form
                 if (picker.ShowDialog() == DialogResult.OK) chromePath.Text = picker.FileName;
         };
         start.Text = "启动独立 Chrome";
-        start.SetBounds(24, 195, 300, 46);
+        persistent.Text = "保留登录（默认）";
+        persistent.SetBounds(24, 188, 250, 28);
+        persistent.Checked = true;
+        temporary.Text = "临时浏览";
+        temporary.SetBounds(340, 188, 250, 28);
+        var modeHint = new Label { Text = "保留登录：下次继续使用；临时浏览：每次新环境，退出后清理。", Location = new Point(24, 224), Size = new Size(631, 30) };
+        start.SetBounds(24, 265, 200, 46);
         start.BackColor = Color.FromArgb(36, 90, 67);
         start.ForeColor = Color.White;
         stop.Text = "停止并关闭此环境";
-        stop.SetBounds(340, 195, 315, 46);
+        stop.SetBounds(236, 265, 205, 46);
         stop.Enabled = false;
         start.Click += async delegate { await StartBrowser(); };
         stop.Click += async delegate { await StopBrowser(); };
-        log.SetBounds(24, 261, 631, 160);
+        retry.Text = "重试清理临时数据";
+        retry.SetBounds(453, 265, 202, 46);
+        retry.Enabled = false;
+        retry.Click += async delegate {
+            if (busy || String.IsNullOrEmpty(lastTemporary)) return;
+            busy = true;
+            start.Enabled = retry.Enabled = false;
+            try {
+                string runtime = await Task.Run(() => Program.Extract(Program.DataRoot));
+                using (var cleanup = new Process()) {
+                    cleanup.StartInfo = Program.NodeStart(runtime, Program.Quote(Path.Combine(runtime, "chrome-launcher.mjs")) + " --cleanup-temp " + Program.Quote(lastTemporary) + " --temporary-root " + Program.Quote(Path.Combine(Program.DataRoot, "temporary-profiles")));
+                    cleanup.Start();
+                    Task<string> output = cleanup.StandardOutput.ReadToEndAsync();
+                    Task<string> error = cleanup.StandardError.ReadToEndAsync();
+                    await Task.Run(() => cleanup.WaitForExit());
+                    Log(await output); Log(await error);
+                    if (cleanup.ExitCode == 0) lastTemporary = FindPendingTemporary();
+                }
+            } catch (Exception error) { Log("清理失败：" + error.Message); }
+            finally { busy = false; start.Enabled = true; retry.Enabled = !String.IsNullOrEmpty(lastTemporary); }
+        };
+        log.SetBounds(24, 330, 631, 160);
         log.Multiline = true;
         log.ReadOnly = true;
         log.ScrollBars = ScrollBars.Vertical;
-        var note = new Label { Text = "此版本不改变 IP，也未限制 WebRTC 直连；字体和 Emoji 保持实际值。\r\n使用期间保留此窗口，关闭窗口会关闭本工具启动的 Chrome。\r\n数据位置：%LOCALAPPDATA%\\ChromePrivacyLauncher", Location = new Point(24, 437), Size = new Size(631, 70), ForeColor = Color.DimGray };
-        Controls.AddRange(new Control[] { heading, description, chromePath, browse, start, stop, log, note });
+        var note = new Label { Text = "此版本不改变 IP，也未限制 WebRTC 直连；字体和 Emoji 保持实际值。\r\n使用期间保留此窗口，关闭窗口会关闭本工具启动的 Chrome。\r\n数据位置：%LOCALAPPDATA%\\ChromePrivacyLauncher", Location = new Point(24, 510), Size = new Size(631, 70), ForeColor = Color.DimGray };
+        Controls.AddRange(new Control[] { heading, description, chromePath, browse, persistent, temporary, modeHint, start, stop, retry, log, note });
         FormClosing += OnClosing;
         Log("免安装，已内置运行环境。点击上方按钮开始。");
+        lastTemporary = FindPendingTemporary();
+        retry.Enabled = lastTemporary != null;
+        if (retry.Enabled) Log("发现上次未清理的临时数据，可点击重试清理：" + lastTemporary);
     }
     void Log(string message)
     {
@@ -212,15 +253,19 @@ sealed class LauncherForm : Form
             MessageBox.Show(this, "请选择已安装的 Google Chrome 的 chrome.exe。", Text); return;
         }
         busy = true;
-        start.Enabled = browse.Enabled = chromePath.Enabled = false;
+        start.Enabled = browse.Enabled = chromePath.Enabled = persistent.Enabled = temporary.Enabled = retry.Enabled = false;
         try
         {
             Log("正在准备内置运行环境，首次启动需要几秒钟……");
             string runtime = await Task.Run(() => Program.Extract(Program.DataRoot));
             job = new ChildJob();
             controller = new Process();
-            controller.StartInfo = Program.NodeStart(runtime, Program.Quote(Path.Combine(runtime, "chrome-launcher.mjs")) + " --desktop --chrome " + Program.Quote(chrome) + " --profile " + Program.Quote(Path.Combine(Program.DataRoot, "chrome-profile")));
-            controller.OutputDataReceived += (sender, e) => { if (e.Data != null && !e.Data.StartsWith("请保留此窗口")) Log(e.Data); };
+            controller.StartInfo = Program.NodeStart(runtime, Program.Quote(Path.Combine(runtime, "chrome-launcher.mjs")) + " --desktop --chrome " + Program.Quote(chrome) + " --profile " + Program.Quote(Path.Combine(Program.DataRoot, "chrome-profile")) + " --mode " + (temporary.Checked ? "temporary" : "persistent") + " --temporary-root " + Program.Quote(Path.Combine(Program.DataRoot, "temporary-profiles")));
+            controller.OutputDataReceived += (sender, e) => {
+                if (e.Data == null) return;
+                if (e.Data.StartsWith("TEMP_PROFILE=")) { BeginInvoke((Action)(() => lastTemporary = e.Data.Substring(13))); return; }
+                if (!e.Data.StartsWith("请保留此窗口")) Log(e.Data);
+            };
             controller.ErrorDataReceived += (sender, e) => Log(e.Data);
             controller.Start();
             job.Assign(controller);
@@ -238,7 +283,9 @@ sealed class LauncherForm : Form
             if (job != null) { job.Dispose(); job = null; }
             if (controller != null) { controller.Dispose(); controller = null; }
             busy = false;
-            start.Enabled = browse.Enabled = chromePath.Enabled = true;
+            start.Enabled = browse.Enabled = chromePath.Enabled = persistent.Enabled = temporary.Enabled = true;
+            lastTemporary = FindPendingTemporary();
+            retry.Enabled = lastTemporary != null;
         }
     }
     async Task StopBrowser()
@@ -253,7 +300,7 @@ sealed class LauncherForm : Form
                 Log("正在关闭此独立环境……");
                 current.StandardInput.WriteLine("stop");
                 current.StandardInput.Flush();
-                await Task.Run(() => { try { current.WaitForExit(12000); } catch (InvalidOperationException) { } });
+                await Task.Run(() => { try { current.WaitForExit(20000); } catch (InvalidOperationException) { } });
             }
         }
         catch (Exception error) { Log("关闭提示：" + error.Message); }
@@ -266,6 +313,7 @@ sealed class LauncherForm : Form
         if (controller == null) return;
         e.Cancel = true;
         await StopBrowser();
+        if (!String.IsNullOrEmpty(lastTemporary) && Directory.Exists(lastTemporary)) MessageBox.Show(this, "临时数据尚未清理，文件可能仍被占用。关闭对应浏览器后，请清理此目录：\r\n" + lastTemporary, "临时数据仍保留");
         closing = true;
         Close();
     }
